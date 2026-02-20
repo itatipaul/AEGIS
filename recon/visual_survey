@@ -1,0 +1,69 @@
+import os
+import asyncio
+
+PRIORITY = 25
+TYPE = "Visual Recon"
+DESCRIPTION = "Takes screenshots of all discovered web interfaces"
+
+# FIX: Graceful fail if playwright is missing
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
+async def take_screenshot(url, output_dir, semaphore):
+    if not PLAYWRIGHT_AVAILABLE: return None
+    async with semaphore:
+        async with async_playwright() as p:
+            try:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(ignore_https_errors=True)
+                page = await context.new_page()
+                await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                
+                safe_name = url.replace("://", "_").replace(":", "_").replace("/", "")
+                filename = f"{output_dir}/{safe_name}.png"
+                await page.screenshot(path=filename, full_page=False)
+                
+                print(f"    [+] Captured: {url}")
+                await browser.close()
+                return {"url": url, "screenshot": filename}
+            except Exception:
+                return None
+
+async def run_async(kb):
+    print(f"[*] Running {DESCRIPTION}...")
+    
+    if not PLAYWRIGHT_AVAILABLE:
+        print("    [!] Playwright not installed. Skipping visual survey.")
+        print("    [i] To fix: pip install playwright && playwright install")
+        return
+
+    targets = []
+    ports_data = kb.get("open_ports", {})
+    for host, ports in ports_data.items():
+        for p in ports:
+            if p['port'] in [80, 443, 8000, 8080, 8443] or "http" in p.get('service', '').lower():
+                proto = "https" if p['port'] in [443, 8443] else "http"
+                targets.append(f"{proto}://{host}:{p['port']}")
+
+    targets = list(set(targets))
+    if not targets:
+        print("    [-] No web targets found.")
+        return
+
+    domain_name = kb.get('target_domain', 'unknown')
+    output_dir = f"screenshots_{domain_name}"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        
+    semaphore = asyncio.Semaphore(4) 
+    tasks = [take_screenshot(url, output_dir, semaphore) for url in targets]
+    results = await asyncio.gather(*tasks)
+    
+    valid = [r for r in results if r]
+    kb.update("visual_recon", valid)
+
+def run(kb):
+    asyncio.run(run_async(kb))
