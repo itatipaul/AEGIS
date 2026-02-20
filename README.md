@@ -19,3 +19,4 @@
 git clone https://github.com/itatipaul/AEGIS
 cd aegis
 pip install -r requirements.txt
+python3 ruun.py -t (target)
